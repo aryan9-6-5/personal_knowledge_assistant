@@ -1,0 +1,6 @@
+pka/
+.env
+.streamlit/secrets.toml
+temp_*
+papers/
+__pycache__/
