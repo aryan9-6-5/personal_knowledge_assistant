@@ -1,6 +1,35 @@
-pka/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+
+# Environment
 .env
 .streamlit/secrets.toml
+
+# Data / Storage
+.chroma_db/
+uploads/
 temp_*
 papers/
-__pycache__/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# Generated
+_lovable_ui/
+Knowledge-Assistant/
+Knowledge-Assistant.zip
+
+# Old files (kept for reference)
+# app.py
+# app1.py
+.venv/
