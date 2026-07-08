@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
     global rag_engine
     from rag.engine import RAGEngine
     from rag.reranker import _load_reranker
+    import database
+
+    logger.info("Starting database initialization...")
+    database.init_db()
 
     logger.info("Starting RAG engine initialization...")
     rag_engine = RAGEngine()
@@ -54,10 +58,12 @@ app.add_middleware(
 )
 
 # Register routers
+from routers.auth import router as auth_router
 from routers.documents import router as documents_router
 from routers.chat import router as chat_router
 from routers.system import router as system_router
 
+app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(chat_router)
 app.include_router(system_router)

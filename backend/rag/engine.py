@@ -42,128 +42,136 @@ class RAGEngine:
         self.doc_processor = DocumentProcessor()
         self.llm = LLMService()
 
-        # Document registry (in-memory, backed by ChromaDB metadata)
-        self.documents: Dict[str, DocumentRecord] = {}
-        self._load_document_registry()
-
-        # Conversation histories
-        self.conversations: Dict[str, List[Dict[str, str]]] = {}
-
         logger.info("RAG Engine initialized.")
 
-    def _load_document_registry(self):
-        """Rebuild document registry from ChromaDB metadata."""
-        stats = self.vector_store.get_stats()
-        if stats["total_chunks"] > 0:
-            try:
-                result = self.vector_store.collection.get(include=["metadatas"])
-                doc_chunks: Dict[str, Dict[str, Any]] = {}
-                for meta in result["metadatas"]:
-                    doc_id = meta.get("doc_id", "unknown")
-                    if doc_id not in doc_chunks:
-                        doc_chunks[doc_id] = {
-                            "name": meta.get("source", "Unknown"),
-                            "count": 0,
-                            "timestamp": meta.get("timestamp", ""),
-                        }
-                    doc_chunks[doc_id]["count"] += 1
-
-                for doc_id, info in doc_chunks.items():
-                    self.documents[doc_id] = DocumentRecord(
-                        id=doc_id,
-                        name=info["name"],
-                        chunks=info["count"],
-                        status="processed",
-                        created_at=info["timestamp"],
-                    )
-                logger.info(f"Loaded {len(self.documents)} documents from registry.")
-            except Exception as e:
-                logger.error(f"Failed to load document registry: {e}")
-
-    async def add_document(self, file_path: str, filename: str) -> DocumentRecord:
+    async def add_document(self, file_path: str, filename: str, user_id: int) -> DocumentRecord:
         """Process and add a document to the knowledge base."""
         doc_id = str(uuid.uuid4())
-        record = DocumentRecord(
-            id=doc_id,
+        
+        # Save initial document record in database
+        import database
+        from datetime import datetime
+        created_at = datetime.now().isoformat()
+        database.add_document(
+            doc_id=doc_id,
+            user_id=user_id,
             name=filename,
             chunks=0,
             status="processing",
+            created_at=created_at,
+            file_path=file_path
         )
-        self.documents[doc_id] = record
 
         try:
             chunks, metadatas = self.doc_processor.process_file(file_path, filename)
-            chunk_count = self.vector_store.add_chunks(chunks, metadatas, doc_id)
+            # Pass user_id to vector store!
+            chunk_count = self.vector_store.add_chunks(chunks, metadatas, doc_id, str(user_id))
 
-            record.chunks = chunk_count
-            record.status = "processed"
-            logger.info(f"Document '{filename}' added: {chunk_count} chunks")
+            # Update document status in database
+            database.update_document_status(doc_id, user_id, "processed", chunk_count)
+            logger.info(f"Document '{filename}' added: {chunk_count} chunks for user {user_id}")
+            
+            return DocumentRecord(
+                id=doc_id,
+                name=filename,
+                chunks=chunk_count,
+                status="processed",
+                created_at=created_at
+            )
         except Exception as e:
-            record.status = "failed"
+            database.update_document_status(doc_id, user_id, "failed", 0)
             logger.error(f"Failed to process '{filename}': {e}")
             raise
 
-        return record
-
-    async def add_url(self, url: str) -> DocumentRecord:
+    async def add_url(self, url: str, user_id: int) -> DocumentRecord:
         """Ingest a web URL into the knowledge base."""
         doc_id = str(uuid.uuid4())
         from urllib.parse import urlparse
         parsed = urlparse(url)
         name = f"{parsed.hostname}{parsed.path}"
+        from datetime import datetime
+        created_at = datetime.now().isoformat()
 
-        record = DocumentRecord(id=doc_id, name=name, chunks=0, status="processing")
-        self.documents[doc_id] = record
+        import database
+        database.add_document(
+            doc_id=doc_id,
+            user_id=user_id,
+            name=name,
+            chunks=0,
+            status="processing",
+            created_at=created_at
+        )
 
         try:
             chunks, metadatas = self.doc_processor.process_url(url)
-            chunk_count = self.vector_store.add_chunks(chunks, metadatas, doc_id)
-            record.chunks = chunk_count
-            record.status = "processed"
+            chunk_count = self.vector_store.add_chunks(chunks, metadatas, doc_id, str(user_id))
+            
+            database.update_document_status(doc_id, user_id, "processed", chunk_count)
+            
+            return DocumentRecord(
+                id=doc_id,
+                name=name,
+                chunks=chunk_count,
+                status="processed",
+                created_at=created_at
+            )
         except Exception as e:
-            record.status = "failed"
+            database.update_document_status(doc_id, user_id, "failed", 0)
             logger.error(f"Failed to ingest URL '{url}': {e}")
             raise
 
-        return record
-
-    def delete_document(self, doc_id: str) -> bool:
+    def delete_document(self, doc_id: str, user_id: int) -> bool:
         """Remove a document from the knowledge base."""
-        if doc_id not in self.documents:
+        import database
+        doc = database.get_document(doc_id, user_id)
+        if not doc:
             return False
+        
+        # Delete from ChromaDB
         self.vector_store.delete_document(doc_id)
-        del self.documents[doc_id]
+        
+        # Delete from SQLite
+        database.delete_user_document(doc_id, user_id)
+        
+        # Delete file if exists
+        file_path = doc.get("file_path")
+        if file_path and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except Exception as e:
+                logger.error(f"Failed to delete file {file_path}: {e}")
         return True
 
-    def clear_all_documents(self):
-        """Remove all documents from the knowledge base and clear the uploads folder."""
-        # Delete from vector store and memory
-        for doc_id in list(self.documents.keys()):
-            self.delete_document(doc_id)
-            
-        # Delete from disk
-        import os
-        from config import settings
-        if os.path.exists(settings.UPLOAD_DIR):
-            for filename in os.listdir(settings.UPLOAD_DIR):
-                file_path = os.path.join(settings.UPLOAD_DIR, filename)
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                except Exception as e:
-                    logger.error(f"Failed to delete {file_path}: {e}")
+    def clear_all_documents(self, user_id: int):
+        """Remove all documents for a user from database, ChromaDB, and uploads folder."""
+        import database
+        docs = database.get_user_documents(user_id)
+        for doc in docs:
+            self.delete_document(doc["id"], user_id)
 
-    def get_documents(self) -> List[DocumentRecord]:
-        """List all documents."""
-        return list(self.documents.values())
+    def get_documents(self, user_id: int) -> List[DocumentRecord]:
+        """List all documents for a user."""
+        import database
+        docs = database.get_user_documents(user_id)
+        return [
+            DocumentRecord(
+                id=d["id"],
+                name=d["name"],
+                chunks=d["chunks"],
+                status=d["status"],
+                created_at=d["created_at"]
+            )
+            for d in docs
+        ]
 
-    async def _retrieve(self, query: str) -> List[Dict[str, Any]]:
+    async def _retrieve(self, query: str, user_id: int) -> List[Dict[str, Any]]:
         """
         Full retrieval pipeline:
-        1. Rephrase query
-        2. Generate HyDE answer and embed it
-        3. Hybrid search (semantic + keyword with RRF)
-        4. Re-rank with cross-encoder
+        1. Query rephrasing
+        2. HyDE (Hypothetical Document Embedding)
+        3. Hybrid search (semantic + BM25 with RRF)
+        4. Cross-encoder re-ranking
+        5. Context assembly
         """
         # Step 1: Rephrase for better retrieval
         rephrased = await self.llm.rephrase_query(query)
@@ -178,10 +186,10 @@ class RAGEngine:
 
         # Step 3: Hybrid search with both embeddings, take the best
         results_hyde = self.vector_store.hybrid_search(
-            rephrased, hyde_embedding, top_k=settings.TOP_K * 2
+            rephrased, hyde_embedding, str(user_id), top_k=settings.TOP_K * 2
         )
         results_query = self.vector_store.hybrid_search(
-            rephrased, query_embedding, top_k=settings.TOP_K * 2
+            rephrased, query_embedding, str(user_id), top_k=settings.TOP_K * 2
         )
 
         # Merge and deduplicate
@@ -200,6 +208,7 @@ class RAGEngine:
     async def query_stream(
         self,
         question: str,
+        user_id: int,
         conversation_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -208,10 +217,16 @@ class RAGEngine:
         - {"event": "sources", "data": {"sources": [...]}}
         - {"event": "done", "data": {"conversation_id": "..."}}
         """
+        import database
         conv_id = conversation_id or str(uuid.uuid4())
 
-        # Retrieve relevant chunks
-        relevant_docs = await self._retrieve(question)
+        # If it's a new conversation, create it in database
+        if not database.conversation_exists(conv_id, user_id):
+            title = question[:30] + "..." if len(question) > 30 else question
+            database.create_conversation(conv_id, user_id, title)
+
+        # Retrieve relevant chunks scoped to user
+        relevant_docs = await self._retrieve(question, user_id)
 
         # Build sources for attribution
         sources = []
@@ -237,8 +252,8 @@ class RAGEngine:
         else:
             context = "No relevant documents found in the knowledge base."
 
-        # Build messages with conversation history
-        history = self.conversations.get(conv_id, [])
+        # Build messages with conversation history from database
+        history = database.get_conversation_history(conv_id)
 
         system_prompt = f"""You are a knowledgeable AI assistant that answers questions based on the provided document context.
 
@@ -253,6 +268,7 @@ Document Context:
 {context}"""
 
         messages = [{"role": "system", "content": system_prompt}]
+        # Assuming database.get_conversation_history returns a list of dictionaries with 'role' and 'content'
         messages.extend(history[-settings.MAX_CONVERSATION_HISTORY:])
         messages.append({"role": "user", "content": question})
 
@@ -262,12 +278,19 @@ Document Context:
             full_response += token
             yield {"event": "token", "data": {"token": token}}
 
-        # Update conversation history
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": full_response})
-        if len(history) > settings.MAX_CONVERSATION_HISTORY * 2:
-            history = history[-(settings.MAX_CONVERSATION_HISTORY * 2):]
-        self.conversations[conv_id] = history
+        # Save user and assistant messages in database
+        import json
+        user_msg_id = str(uuid.uuid4())
+        assistant_msg_id = str(uuid.uuid4())
+        
+        database.add_message(user_msg_id, conv_id, "user", question)
+        database.add_message(
+            assistant_msg_id, 
+            conv_id, 
+            "assistant", 
+            full_response, 
+            json.dumps(sources) if sources else None
+        )
 
         # Send sources
         if sources:
@@ -275,19 +298,19 @@ Document Context:
 
         yield {"event": "done", "data": {"conversation_id": conv_id}}
 
-    def clear_conversation(self, conversation_id: str = None):
+    def clear_conversation(self, user_id: int, conversation_id: str = None):
         """Clear conversation history."""
-        if conversation_id:
-            self.conversations.pop(conversation_id, None)
-        else:
-            self.conversations.clear()
+        import database
+        database.clear_user_conversations(user_id)
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get system statistics."""
-        vs_stats = self.vector_store.get_stats()
+    def get_stats(self, user_id: int) -> Dict[str, Any]:
+        """Get system statistics scoped to user."""
+        import database
+        user_stats = self.vector_store.get_user_stats(str(user_id))
+        conversations = database.get_user_conversations(user_id)
         return {
-            "total_documents": len(self.documents),
-            "total_chunks": vs_stats["total_chunks"],
-            "status": vs_stats["status"],
-            "active_conversations": len(self.conversations),
+            "total_documents": user_stats["total_documents"],
+            "total_chunks": user_stats["total_chunks"],
+            "status": user_stats["status"],
+            "active_conversations": len(conversations),
         }

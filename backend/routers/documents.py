@@ -2,9 +2,10 @@
 
 import logging
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 
 from models.schemas import DocumentInfo, DocumentUploadResponse, UrlIngestRequest
+from auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,10 @@ def get_engine():
 
 
 @router.get("/documents", response_model=List[DocumentInfo])
-async def list_documents():
-    """List all ingested documents."""
+async def list_documents(current_user: dict = Depends(get_current_user)):
+    """List all ingested documents for the current user."""
     engine = get_engine()
-    docs = engine.get_documents()
+    docs = engine.get_documents(current_user["id"])
     return [
         DocumentInfo(
             id=d.id,
@@ -35,8 +36,11 @@ async def list_documents():
 
 
 @router.post("/documents/upload", response_model=DocumentUploadResponse)
-async def upload_documents(files: List[UploadFile] = File(...)):
-    """Upload and process document files (PDF, TXT, MD)."""
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload and process document files (PDF, TXT, MD) for the current user."""
     engine = get_engine()
     results = []
 
@@ -44,7 +48,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         try:
             content = await file.read()
             file_path = await engine.doc_processor.save_uploaded_file(content, file.filename)
-            record = await engine.add_document(file_path, file.filename)
+            record = await engine.add_document(file_path, file.filename, current_user["id"])
             results.append(
                 DocumentInfo(
                     id=record.id,
@@ -70,11 +74,14 @@ async def upload_documents(files: List[UploadFile] = File(...)):
 
 
 @router.post("/documents/url", response_model=DocumentInfo)
-async def ingest_url(req: UrlIngestRequest):
-    """Ingest content from a web URL."""
+async def ingest_url(
+    req: UrlIngestRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Ingest content from a web URL for the current user."""
     engine = get_engine()
     try:
-        record = await engine.add_url(req.url)
+        record = await engine.add_url(req.url, current_user["id"])
         return DocumentInfo(
             id=record.id,
             name=record.name,
@@ -87,9 +94,12 @@ async def ingest_url(req: UrlIngestRequest):
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str):
-    """Delete a document and its chunks."""
+async def delete_document(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a document and its chunks for the current user."""
     engine = get_engine()
-    if engine.delete_document(doc_id):
+    if engine.delete_document(doc_id, current_user["id"]):
         return {"success": True}
     raise HTTPException(status_code=404, detail="Document not found")

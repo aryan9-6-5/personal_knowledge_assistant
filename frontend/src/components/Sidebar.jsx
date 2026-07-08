@@ -1,9 +1,9 @@
 import { useState, useRef } from 'react';
-import { BrainCircuit, UploadCloud, Link, Trash2, FileText, Sun, Moon, Activity } from 'lucide-react';
+import { BrainCircuit, UploadCloud, Link, Trash2, FileText, Sun, Moon, Activity, LogOut } from 'lucide-react';
 
 export default function Sidebar({
-  open, documents, stats, uploading, theme,
-  onToggleTheme, onUpload, onUrlIngest, onDeleteDoc, onClearChat,
+  open, documents, stats, uploading, theme, currentUser,
+  onToggleTheme, onUpload, onUrlIngest, onDeleteDoc, onClearChat, onLogout,
 }) {
   const [urlVal, setUrlVal] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -130,6 +130,20 @@ export default function Sidebar({
 
       {/* Footer */}
       <div className="sidebar-footer">
+        {currentUser && (
+          <div className="user-profile-badge">
+            <div className="user-profile-avatar">
+              {currentUser.username.substring(0, 2)}
+            </div>
+            <div className="user-profile-info" style={{ flex: 1 }}>
+              <div className="user-profile-name">{currentUser.username}</div>
+              <div className="user-profile-role">Standard User</div>
+            </div>
+            <button className="btn icon logout-btn" onClick={onLogout} title="Log Out">
+              <LogOut size={14} />
+            </button>
+          </div>
+        )}
         {stats && (
           <div className="sidebar-stats">
             <span>Chunks: {stats.total_chunks}</span>

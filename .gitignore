@@ -33,3 +33,4 @@ Knowledge-Assistant.zip
 # app.py
 # app1.py
 .venv/
+backend/database.db

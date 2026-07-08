@@ -2,10 +2,11 @@
 
 import json
 import logging
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import StreamingResponse
 
 from models.schemas import ChatRequest
+from auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,16 @@ def get_engine():
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest):
-    """Query the knowledge base with SSE streaming response."""
+async def chat(
+    req: ChatRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Query the knowledge base with SSE streaming response scoped to current user."""
     engine = get_engine()
 
     async def event_stream():
         try:
-            async for event in engine.query_stream(req.message, req.conversation_id):
+            async for event in engine.query_stream(req.message, current_user["id"], req.conversation_id):
                 event_type = event["event"]
                 data = json.dumps(event["data"])
                 yield f"event: {event_type}\ndata: {data}\n\n"
@@ -44,9 +48,9 @@ async def chat(req: ChatRequest):
 
 
 @router.delete("/chat/history")
-async def clear_history():
-    """Clear all conversation histories and uploaded documents."""
+async def clear_history(current_user: dict = Depends(get_current_user)):
+    """Clear conversation history and uploaded documents for the current user."""
     engine = get_engine()
-    engine.clear_conversation()
-    engine.clear_all_documents()
+    engine.clear_conversation(current_user["id"])
+    engine.clear_all_documents(current_user["id"])
     return {"success": True}

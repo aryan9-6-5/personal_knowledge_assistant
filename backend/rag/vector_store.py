@@ -34,9 +34,9 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
 
-        # In-memory BM25 index — rebuilt on startup and after doc changes
-        self._bm25_corpus: List[Dict[str, Any]] = []
-        self._bm25_index: Optional[BM25Okapi] = None
+        # In-memory BM25 indices scoped per user — rebuilt on startup and after doc changes
+        self._bm25_corpora: Dict[str, List[Dict[str, Any]]] = {}
+        self._bm25_indices: Dict[str, BM25Okapi] = {}
         self._rebuild_bm25_index()
 
         logger.info(
@@ -45,35 +45,43 @@ class VectorStore:
         )
 
     def _rebuild_bm25_index(self):
-        """Rebuild the BM25 index from all stored documents."""
+        """Rebuild the BM25 index from stored documents, grouped by user."""
         try:
             result = self.collection.get(include=["documents", "metadatas"])
+            self._bm25_corpora = {}
+            self._bm25_indices = {}
             if result["documents"]:
-                self._bm25_corpus = [
-                    {
+                # Group by user_id
+                for doc, meta, id_ in zip(
+                    result["documents"], result["metadatas"], result["ids"]
+                ):
+                    user_id = str(meta.get("user_id", "public"))
+                    if user_id not in self._bm25_corpora:
+                        self._bm25_corpora[user_id] = []
+                    self._bm25_corpora[user_id].append({
                         "content": doc,
                         "metadata": meta,
                         "id": id_,
-                    }
-                    for doc, meta, id_ in zip(
-                        result["documents"], result["metadatas"], result["ids"]
-                    )
-                ]
-                tokenized = [doc.lower().split() for doc in result["documents"]]
-                self._bm25_index = BM25Okapi(tokenized)
+                    })
+                
+                # Build BM25 index for each user's corpus
+                for user_id, corpus in self._bm25_corpora.items():
+                    tokenized = [doc["content"].lower().split() for doc in corpus]
+                    self._bm25_indices[user_id] = BM25Okapi(tokenized)
             else:
-                self._bm25_corpus = []
-                self._bm25_index = None
+                self._bm25_corpora = {}
+                self._bm25_indices = {}
         except Exception as e:
             logger.error(f"BM25 index rebuild failed: {e}")
-            self._bm25_corpus = []
-            self._bm25_index = None
+            self._bm25_corpora = {}
+            self._bm25_indices = {}
 
     def add_chunks(
         self,
         chunks: List[str],
         metadatas: List[Dict[str, Any]],
         doc_id: str,
+        user_id: str,
     ) -> int:
         """Add document chunks to the vector store. Returns count of chunks added."""
         if not chunks:
@@ -95,6 +103,7 @@ class VectorStore:
                 {
                     **meta,
                     "doc_id": doc_id,
+                    "user_id": user_id,
                     "chunk_index": i,
                     "timestamp": datetime.now().isoformat(),
                 }
@@ -111,7 +120,7 @@ class VectorStore:
         # Rebuild BM25 index
         self._rebuild_bm25_index()
 
-        logger.info(f"Added {len(chunks)} chunks for document {doc_id}")
+        logger.info(f"Added {len(chunks)} chunks for document {doc_id} of user {user_id}")
         return len(chunks)
 
     def delete_document(self, doc_id: str):
@@ -129,15 +138,16 @@ class VectorStore:
             logger.error(f"Delete error for doc {doc_id}: {e}")
 
     def semantic_search(
-        self, query_embedding: List[float], top_k: int = 10
+        self, query_embedding: List[float], user_id: str, top_k: int = 10
     ) -> List[Dict[str, Any]]:
-        """Pure semantic (vector) search."""
+        """Pure semantic (vector) search scoped to a user."""
         if self.collection.count() == 0:
             return []
 
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=min(top_k, self.collection.count()),
+            where={"user_id": user_id},
             include=["documents", "metadatas", "distances"],
         )
 
@@ -153,16 +163,18 @@ class VectorStore:
             )
         return items
 
-    def keyword_search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        """BM25 keyword search."""
-        if not self._bm25_index or not self._bm25_corpus:
+    def keyword_search(self, query: str, user_id: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """BM25 keyword search scoped to a user."""
+        bm25_index = self._bm25_indices.get(user_id)
+        bm25_corpus = self._bm25_corpora.get(user_id, [])
+        if not bm25_index or not bm25_corpus:
             return []
 
         query_tokens = query.lower().split()
-        scores = self._bm25_index.get_scores(query_tokens)
+        scores = bm25_index.get_scores(query_tokens)
 
         scored_docs = [
-            {**self._bm25_corpus[i], "score": float(scores[i])}
+            {**bm25_corpus[i], "score": float(scores[i])}
             for i in range(len(scores))
             if scores[i] > 0
         ]
@@ -173,17 +185,16 @@ class VectorStore:
         self,
         query: str,
         query_embedding: List[float],
+        user_id: str,
         top_k: int = 10,
         rrf_k: int = 60,
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search combining semantic and keyword results
-        using Reciprocal Rank Fusion (RRF).
-
-        RRF score = sum(1 / (k + rank_i)) for each ranking list.
+        using Reciprocal Rank Fusion (RRF) scoped to a user.
         """
-        semantic_results = self.semantic_search(query_embedding, top_k * 2)
-        keyword_results = self.keyword_search(query, top_k * 2)
+        semantic_results = self.semantic_search(query_embedding, user_id, top_k * 2)
+        keyword_results = self.keyword_search(query, user_id, top_k * 2)
 
         # Build RRF scores
         rrf_scores: Dict[str, float] = {}
@@ -212,7 +223,7 @@ class VectorStore:
         return results
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get collection statistics."""
+        """Get global collection statistics (used for general checks)."""
         count = self.collection.count()
 
         # Count unique documents
@@ -231,3 +242,28 @@ class VectorStore:
             "total_documents": len(doc_ids),
             "status": "ready",
         }
+
+    def get_user_stats(self, user_id: str) -> Dict[str, Any]:
+        """Get collection statistics for a specific user."""
+        try:
+            results = self.collection.get(
+                where={"user_id": user_id},
+                include=["metadatas"],
+            )
+            count = len(results["ids"])
+            doc_ids = set()
+            for meta in results["metadatas"]:
+                if "doc_id" in meta:
+                    doc_ids.add(meta["doc_id"])
+            return {
+                "total_chunks": count,
+                "total_documents": len(doc_ids),
+                "status": "ready",
+            }
+        except Exception as e:
+            logger.error(f"Failed to get user stats: {e}")
+            return {
+                "total_chunks": 0,
+                "total_documents": 0,
+                "status": "ready",
+            }

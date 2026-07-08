@@ -1,0 +1,73 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  frontend-check:
+    name: Frontend Build & Lint Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run Lint
+        run: |
+          cd frontend
+          npm run lint || echo "Lint warnings present"
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm run build
+
+  backend-check:
+    name: Backend Setup & Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+  deploy-backend:
+    name: Deploy Backend to Render
+    needs: [frontend-check, backend-check]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy Hook
+        # Triggers a redeployment of the Render service using a Deploy Hook URL
+        # Create a GitHub Repository secret: RENDER_DEPLOY_HOOK_URL
+        run: |
+          if [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            curl -X GET "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+            echo "Render deploy hook triggered successfully!"
+          else
+            echo "RENDER_DEPLOY_HOOK_URL secret not set. Skipping trigger."
+          fi
