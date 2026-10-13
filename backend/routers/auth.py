@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 import database
 import auth
+from ratelimit import limit_per_ip, REGISTER_LIMIT_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,8 @@ class UserResponse(BaseModel):
     id: int
     username: str
 
-@router.post("/register", response_model=UserResponse)
+@router.post("/register", response_model=UserResponse,
+             dependencies=[Depends(limit_per_ip("register", REGISTER_LIMIT_PER_HOUR))])
 async def register(user_data: UserRegister):
     """Register a new user."""
     # Check if user already exists

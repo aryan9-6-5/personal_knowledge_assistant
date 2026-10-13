@@ -23,21 +23,27 @@ rag_engine = None
 async def lifespan(app: FastAPI):
     """Initialize RAG engine on startup, cleanup on shutdown."""
     global rag_engine
+    print(">>> Lifespan startup: beginning initialization...", flush=True)
     from rag.engine import RAGEngine
     from rag.reranker import _load_reranker
     import database
 
+    print(">>> Lifespan startup: initializing database...", flush=True)
     logger.info("Starting database initialization...")
     database.init_db()
 
+    print(">>> Lifespan startup: initializing RAGEngine...", flush=True)
     logger.info("Starting RAG engine initialization...")
     rag_engine = RAGEngine()
     logger.info("RAG engine ready.")
     
+    print(">>> Lifespan startup: loading cross-encoder re-ranker...", flush=True)
     logger.info("Eagerly loading cross-encoder re-ranker...")
     _load_reranker()
     
+    print(">>> Lifespan startup: complete!", flush=True)
     yield
+    print(">>> Lifespan shutdown: beginning cleanup...", flush=True)
     logger.info("Shutting down.")
 
 

@@ -6,6 +6,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 
 from models.schemas import DocumentInfo, DocumentUploadResponse, UrlIngestRequest
 from auth import get_current_user
+from ratelimit import limit_per_user, UPLOAD_LIMIT_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,8 @@ async def list_documents(current_user: dict = Depends(get_current_user)):
     ]
 
 
-@router.post("/documents/upload", response_model=DocumentUploadResponse)
+@router.post("/documents/upload", response_model=DocumentUploadResponse,
+             dependencies=[Depends(limit_per_user("upload", UPLOAD_LIMIT_PER_HOUR))])
 async def upload_documents(
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user)
@@ -47,6 +49,8 @@ async def upload_documents(
     for file in files:
         try:
             content = await file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail=f"{file.filename} is larger than 10 MB")
             file_path = await engine.doc_processor.save_uploaded_file(content, file.filename)
             record = await engine.add_document(file_path, file.filename, current_user["id"])
             results.append(

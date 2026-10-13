@@ -1,6 +1,7 @@
 """Core RAG engine — orchestrates the full retrieval-augmented generation pipeline."""
 
 import logging
+import os
 import uuid
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from dataclasses import dataclass, field

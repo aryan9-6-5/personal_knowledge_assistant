@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from models.schemas import ChatRequest
 from auth import get_current_user
+from ratelimit import limit_per_user, CHAT_LIMIT_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ def get_engine():
     return rag_engine
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(limit_per_user("chat", CHAT_LIMIT_PER_HOUR))])
 async def chat(
     req: ChatRequest,
     current_user: dict = Depends(get_current_user)

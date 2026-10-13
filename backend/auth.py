@@ -1,4 +1,5 @@
 import os
+import secrets
 import jwt
 import bcrypt
 import logging
@@ -12,8 +13,9 @@ import database
 logger = logging.getLogger(__name__)
 
 # Security configurations
-# Note: In production, this should be a robust key loaded from env.
-SECRET_KEY = os.getenv("JWT_SECRET", "8c919d7e366e6bdf21415ad824a73b8a1c9ef2bb6f7c7674251ad0f455bf96df")
+# Set JWT_SECRET in the environment for stable sessions across restarts. If it is
+# missing, a random key is generated at startup (tokens then expire on restart).
+SECRET_KEY = os.getenv("JWT_SECRET") or secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
