@@ -18,7 +18,7 @@ An **advanced RAG (Retrieval-Augmented Generation)** application that lets you u
 |-------|-----------|
 | Frontend | React + Vite |
 | Backend | FastAPI (Python) |
-| LLM | Groq API (Llama 3.3 70B) |
+| LLM | Groq API (`LLM_MODEL`, default `openai/gpt-oss-120b`) |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, local) |
 | Vector DB | ChromaDB (persistent) |
 | Re-ranker | cross-encoder/ms-marco-MiniLM-L-6-v2 |

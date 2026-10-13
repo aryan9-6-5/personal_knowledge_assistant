@@ -3,6 +3,8 @@
 import logging
 from typing import List, Dict, Any
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 # Try to load cross-encoder; fall back to score-based ranking if unavailable
@@ -12,8 +14,12 @@ _reranker_available = False
 def _load_reranker():
     global _reranker_model, _reranker_available
     try:
-        from sentence_transformers import CrossEncoder
-        _reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu")
+        if settings.EMBEDDING_BACKEND == "onnx":
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            _reranker_model = TextCrossEncoder("Xenova/ms-marco-MiniLM-L-6-v2")
+        else:
+            from sentence_transformers import CrossEncoder
+            _reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu")
         _reranker_available = True
         logger.info("Cross-encoder re-ranker loaded successfully.")
     except Exception as e:
@@ -44,7 +50,10 @@ def rerank(
         pairs = [(query, candidate["content"]) for candidate in candidates]
 
         try:
-            scores = _reranker_model.predict(pairs)
+            if settings.EMBEDDING_BACKEND == "onnx":
+                scores = list(_reranker_model.rerank(query, [c["content"] for c in candidates]))
+            else:
+                scores = _reranker_model.predict(pairs)
 
             for i, score in enumerate(scores):
                 candidates[i]["rerank_score"] = float(score)

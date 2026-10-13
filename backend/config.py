@@ -11,7 +11,8 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: str = ""
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    EMBEDDING_BACKEND: str = "sentence-transformers"  # or "onnx" (fastembed, no PyTorch)
+    LLM_MODEL: str = "openai/gpt-oss-120b"
 
     # Chunking
     CHUNK_SIZE: int = 800

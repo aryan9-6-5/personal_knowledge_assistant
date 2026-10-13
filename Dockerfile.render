@@ -1,0 +1,28 @@
+# Low-memory image for free 512 MB hosts (Render free web service).
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+RUN useradd -m -u 1000 user
+ENV HOME=/home/user PYTHONUNBUFFERED=1 PORT=10000 \
+    EMBEDDING_BACKEND=onnx FASTEMBED_CACHE_PATH=/home/user/.cache/fastembed \
+    OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false
+WORKDIR /app
+
+COPY backend/requirements-slim.txt ./backend/requirements-slim.txt
+RUN pip install --no-cache-dir -r backend/requirements-slim.txt
+
+COPY --chown=user backend/ ./backend
+COPY --from=frontend-builder --chown=user /app/frontend/dist ./frontend/dist
+RUN chown -R user:user /app
+USER user
+
+RUN python -c "from fastembed import TextEmbedding; from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+TextEmbedding('sentence-transformers/all-MiniLM-L6-v2'); TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2')"
+
+WORKDIR /app/backend
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
